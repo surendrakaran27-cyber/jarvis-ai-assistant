@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:http/http.dart' as http;
 
 void main() => runApp(const JarvisApp());
 
@@ -15,9 +17,7 @@ class JarvisApp extends StatefulWidget {
 class _JarvisAppState extends State<JarvisApp> {
   bool _isDarkMode = true;
 
-  void toggleTheme(bool val) {
-    setState(() => _isDarkMode = val);
-  }
+  void toggleTheme(bool val) => setState(() => _isDarkMode = val);
 
   @override
   Widget build(BuildContext context) {
@@ -80,9 +80,15 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
   late AnimationController _pulseAnimController;
 
   final FlutterTts _tts = FlutterTts();
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+  bool _isProcessingAI = false;
+
   final List<Map<String, String>> _logs = [];
   final TextEditingController _commandInputController = TextEditingController();
+  final TextEditingController _apiKeyController = TextEditingController();
 
+  String _geminiApiKey = "";
   double _rotX = 0.0;
   double _rotY = 0.0;
   double _scale = 1.0;
@@ -90,11 +96,12 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
   String _activeHologramShape = "ORB";
   bool _isSpeaking = false;
   String _statusText = "SYSTEM STANDBY";
-  String _lastVoiceSubtitle = "Tap the reactor or enter a command...";
+  String _lastVoiceSubtitle = "Tap Hologram or Mic to speak...";
 
   @override
   void initState() {
     super.initState();
+    _speech = stt.SpeechToText();
 
     _idleAnimController = AnimationController(
       vsync: this,
@@ -107,7 +114,7 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
     )..repeat(reverse: true);
 
     _initTtsEngine();
-    _addLog("SYSTEM_BOOT", "JARVIS Core protocol initialized successfully.");
+    _addLog("SYSTEM_BOOT", "JARVIS Core & AI Link loaded.");
   }
 
   @override
@@ -116,6 +123,7 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
     _pulseAnimController.dispose();
     _tts.stop();
     _commandInputController.dispose();
+    _apiKeyController.dispose();
     super.dispose();
   }
 
@@ -156,30 +164,113 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
     });
   }
 
-  void _handleCommand(String cmd) {
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+      return;
+    }
+
+    bool available = await _speech.initialize(
+      onStatus: (status) {
+        if (status == "done" || status == "notListening") {
+          setState(() => _isListening = false);
+        }
+      },
+      onError: (val) => setState(() => _isListening = false),
+    );
+
+    if (available) {
+      setState(() {
+        _isListening = true;
+        _statusText = "LISTENING COMMAND...";
+      });
+      _speech.listen(
+        onResult: (val) {
+          if (val.finalResult) {
+            _handleCommand(val.recognizedWords);
+            setState(() => _isListening = false);
+          }
+        },
+      );
+    }
+  }
+
+  Future<void> _handleCommand(String cmd) async {
     if (cmd.trim().isEmpty) return;
     _commandInputController.clear();
     _addLog("USER_INPUT", cmd);
 
     final lower = cmd.toLowerCase();
 
+    // Shape Morphing Rules
     if (lower.contains("cube") || lower.contains("dabba") || lower.contains("box")) {
       setState(() => _activeHologramShape = "CUBE");
-      _speakResponse("Hologram converted to 3D Cube Wireframe architecture, sir.");
-    } else if (lower.contains("pyramid") || lower.contains("cone")) {
+      _speakResponse("Holographic matrix transformed to 3D Cube.");
+      return;
+    } else if (lower.contains("pyramid") || lower.contains("cone") || lower.contains("triangle")) {
       setState(() => _activeHologramShape = "PYRAMID");
-      _speakResponse("Reconfiguring holographic projection to Pyramid matrix.");
+      _speakResponse("Reconfiguring projection to Pyramid grid.");
+      return;
     } else if (lower.contains("cylinder") || lower.contains("reactor")) {
       setState(() => _activeHologramShape = "CYLINDER");
-      _speakResponse("Rendering Arc Reactor core cylinder.");
-    } else if (lower.contains("orb") ||
-        lower.contains("sphere") ||
-        lower.contains("circle") ||
-        lower.contains("reset")) {
+      _speakResponse("Displaying Arc Reactor power cell.");
+      return;
+    } else if (lower.contains("orb") || lower.contains("sphere") || lower.contains("reset")) {
       setState(() => _activeHologramShape = "ORB");
-      _speakResponse("Primary AI Sphere matrix restored.");
+      _speakResponse("Primary AI core sphere restored.");
+      return;
+    }
+
+    // AI Query Processing
+    if (_geminiApiKey.trim().isNotEmpty) {
+      await _queryGeminiAI(cmd);
     } else {
-      _speakResponse("Command analyzed. Hologram synchronized for: $cmd");
+      _speakResponse("Command received: $cmd. Add your free Gemini API key in Settings HUD for deep intelligence.");
+    }
+  }
+
+  Future<void> _queryGeminiAI(String prompt) async {
+    setState(() {
+      _isProcessingAI = true;
+      _statusText = "PROCESSING NEURAL AI...";
+    });
+
+    final url = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$_geminiApiKey');
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text":
+                      "You are JARVIS, a highly advanced, respectful, and intelligent AI assistant. Keep responses under 2-3 short, crisp sentences in natural Hinglish or English suitable for text-to-speech. User prompt: $prompt"
+                }
+              ]
+            }
+          ]
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final aiText = data['candidates'][0]['content']['parts'][0]['text'];
+        _speakResponse(aiText.toString().replaceAll('*', ''));
+      } else {
+        _speakResponse("Neural link error. Please verify the Gemini API key in settings.");
+      }
+    } catch (e) {
+      _speakResponse("Unable to reach cloud neural servers.");
+    } finally {
+      setState(() {
+        _isProcessingAI = false;
+        _statusText = "SYSTEM ONLINE";
+      });
     }
   }
 
@@ -230,10 +321,14 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
                 height: 8,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _isSpeaking ? const Color(0xFF00E5FF) : const Color(0xFFFFB300),
+                  color: _isListening
+                      ? Colors.redAccent
+                      : (_isSpeaking ? const Color(0xFF00E5FF) : const Color(0xFFFFB300)),
                   boxShadow: [
                     BoxShadow(
-                      color: _isSpeaking ? const Color(0xFF00E5FF) : const Color(0xFFFFB300),
+                      color: _isListening
+                          ? Colors.redAccent
+                          : (_isSpeaking ? const Color(0xFF00E5FF) : const Color(0xFFFFB300)),
                       blurRadius: 8,
                       spreadRadius: 2,
                     ),
@@ -276,7 +371,9 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
             _lastVoiceSubtitle,
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: isDark ? const Color(0xFF00E5FF) : const Color(0xFF007799),
+              color: _isListening
+                  ? Colors.redAccent
+                  : (isDark ? const Color(0xFF00E5FF) : const Color(0xFF007799)),
               fontSize: 13,
               fontWeight: FontWeight.w500,
               letterSpacing: 0.5,
@@ -300,12 +397,13 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
                 _scale = 1.0;
               });
             },
+            onTap: _toggleListening,
             child: Center(
               child: AnimatedBuilder(
                 animation: Listenable.merge([_idleAnimController, _pulseAnimController]),
                 builder: (context, child) {
-                  final pulseScale = _isSpeaking
-                      ? 1.0 + (_pulseAnimController.value * 0.18)
+                  final pulseScale = _isSpeaking || _isListening
+                      ? 1.0 + (_pulseAnimController.value * 0.2)
                       : 1.0 + (_pulseAnimController.value * 0.04);
 
                   return CustomPaint(
@@ -315,9 +413,9 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
                       rotY: _rotY + (_idleAnimController.value * 2 * math.pi),
                       scale: _scale * pulseScale,
                       shapeType: _activeHologramShape,
-                      glowColor: const Color(0xFFFFB300),
+                      glowColor: _isListening ? Colors.redAccent : const Color(0xFFFFB300),
                       accentColor: const Color(0xFF00E5FF),
-                      isSpeaking: _isSpeaking,
+                      isSpeaking: _isSpeaking || _isListening,
                     ),
                   );
                 },
@@ -337,12 +435,19 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
           ),
           child: Row(
             children: [
+              IconButton(
+                icon: Icon(
+                  _isListening ? Icons.mic : Icons.mic_none,
+                  color: _isListening ? Colors.redAccent : const Color(0xFFFFB300),
+                ),
+                onPressed: _toggleListening,
+              ),
               Expanded(
                 child: TextField(
                   controller: _commandInputController,
                   style: TextStyle(color: isDark ? Colors.white : Colors.black),
                   decoration: const InputDecoration(
-                    hintText: "Transform hologram: cube, pyramid, orb...",
+                    hintText: "Speak or type command / ask anything...",
                     hintStyle: TextStyle(fontSize: 12, color: Colors.grey),
                     border: InputBorder.none,
                   ),
@@ -430,14 +535,26 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0xFFFFB300).withOpacity(0.3)),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("Cyber Dark Interface", style: TextStyle(fontWeight: FontWeight.w600)),
-              Switch(
-                value: widget.isDarkMode,
-                activeColor: const Color(0xFFFFB300),
-                onChanged: widget.onThemeChanged,
+              const Text("Google Gemini AI Neural Key",
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              const SizedBox(height: 4),
+              const Text("Paste your free Gemini API key below to activate JARVIS cloud intelligence:",
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _apiKeyController,
+                style: TextStyle(color: isDark ? Colors.white : Colors.black, fontSize: 12),
+                decoration: InputDecoration(
+                  hintText: "AIzaSy...",
+                  hintStyle: const TextStyle(color: Colors.grey),
+                  filled: true,
+                  fillColor: isDark ? Colors.black26 : Colors.black12,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onChanged: (val) => _geminiApiKey = val.trim(),
               ),
             ],
           ),
@@ -448,15 +565,17 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
           decoration: BoxDecoration(
             color: isDark ? const Color(0xFF0E131F) : Colors.white,
             borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFFFB300).withOpacity(0.3)),
           ),
-          child: const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("Voice Engine Pitch: 0.75 (Heavy Baritone)",
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
-              SizedBox(height: 4),
-              Text("Language Matrix: Hinglish / Indian English",
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const Text("Cyber Dark Interface", style: TextStyle(fontWeight: FontWeight.w600)),
+              Switch(
+                value: widget.isDarkMode,
+                activeColor: const Color(0xFFFFB300),
+                onChanged: widget.onThemeChanged,
+              ),
             ],
           ),
         ),
