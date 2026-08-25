@@ -12,6 +12,7 @@ dependencies:
   flutter_tts: ^4.2.2
   speech_to_text: ^7.0.0
   shared_preferences: ^2.3.2
+  http: ^1.2.0
 
 flutter:
   uses-material-design: true
